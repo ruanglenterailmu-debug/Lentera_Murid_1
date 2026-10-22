@@ -499,76 +499,74 @@ details.mi-sec .mi-body{padding:0 14px 14px;}
 </script>
 <script>
 /* ======================================================================
-   PENYIMPANAN BERSAMA LINTAS PERANGKAT — backend: SUPABASE
+   PENYIMPANAN BERSAMA LINTAS PERANGKAT (fallback di luar Claude Artifact)
    ----------------------------------------------------------------------
-   Dipakai HANYA jika window.storage belum tersedia (file dibuka sebagai
-   HTML biasa). Semua data aplikasi disimpan di satu tabel "kv"
-   (kolom: key, value). Cara membuat tabel: jalankan file supabase_setup.sql
-   di Supabase -> SQL Editor.
-   ISI DUA NILAI DI BAWAH (Supabase -> Project Settings -> API):
-     - Project URL        -> SUPABASE_URL
-     - Publishable key (atau anon key lama) -> SUPABASE_ANON_KEY
+   Kode ini otomatis dipakai HANYA jika window.storage belum tersedia
+   (artinya file dibuka sebagai HTML biasa: download, WhatsApp, hosting
+   sendiri, dsb). Jika sudah ada window.storage bawaan (dijalankan di
+   dalam artifact Claude), kode ini tidak melakukan apa pun.
+   Backend-nya memakai Google Apps Script + Google Sheets (gratis).
+   CARA AKTIVASI (wajib dilakukan sekali oleh guru):
+     1. Buka https://script.google.com -> Proyek baru.
+     2. Hapus isi default, tempel kode dari file "AppsScript_Backend.gs"
+        yang saya sertakan terpisah.
+     3. Klik Deploy -> New deployment -> pilih tipe "Web app".
+        - Execute as: Me
+        - Who has access: Anyone
+     4. Salin URL Web App yang diberikan (diakhiri /exec).
+     5. Tempel URL itu menggantikan teks 'PASTE_URL_APPS_SCRIPT_DI_SINI'
+        pada baris REMOTE_STORAGE_URL tepat di bawah ini.
+     6. Simpan file ini, lalu file siap dipakai dari HP mana pun tanpa
+        harus lewat Claude sama sekali.
    ====================================================================== */
-const SUPABASE_URL = 'https://fhkbxqwozyonujxebtqm.supabase.co';          // contoh: https://abcdxyz.supabase.co
-const SUPABASE_ANON_KEY = 'sb_publishable_WuYhVxV5y8fSNv9Jb_kh0A_uGv0GmDc'; // kunci "Publishable" (sb_publishable_...) atau "anon" lama. JANGAN pakai secret / service_role!
-(function initSupabaseStorage(){
+const REMOTE_STORAGE_URL = 'https://script.google.com/macros/s/AKfycbxhzvuK5eLIHueR9uCqFLShJEapbIHHINNw-fQZkf4LAFe-xjl3xQd-KmZOD2xAXnff/exec';
+(function initRemoteStorageFallback(){
   if(window.storage) return; // sudah ada penyimpanan bawaan (mode artifact Claude)
-  const configured = SUPABASE_URL.indexOf('PASTE_') === -1 && SUPABASE_ANON_KEY.indexOf('PASTE_') === -1;
+  const configured = REMOTE_STORAGE_URL && REMOTE_STORAGE_URL.indexOf('PASTE_URL') === -1;
   if(!configured){
     window.addEventListener('DOMContentLoaded', () => {
       const bar = document.createElement('div');
       bar.style.cssText = 'position:sticky;top:0;z-index:99999;background:#7A281E;color:#fff;padding:10px 16px;font-size:13px;text-align:center;font-family:sans-serif;line-height:1.5;';
-      bar.innerHTML = '&#9888;&#65039; Supabase belum dikonfigurasi: token & hasil ujian TIDAK akan tersinkron antar perangkat.<br>Isi SUPABASE_URL dan SUPABASE_ANON_KEY di bagian atas kode.';
+      bar.innerHTML = '&#9888;&#65039; Backend belum diaktifkan: token & hasil ujian TIDAK akan tersinkron antar perangkat.<br>Lihat komentar REMOTE_STORAGE_URL di bagian atas kode untuk cara mengaktifkan (gratis, pakai Google Sheets).';
       document.body.prepend(bar);
     });
     return;
   }
-  const REST = SUPABASE_URL.replace(/\/+$/, '') + '/rest/v1/kv';
-  const H = { 'apikey': SUPABASE_ANON_KEY };
-  if(SUPABASE_ANON_KEY.indexOf('eyJ') === 0) H['Authorization'] = 'Bearer ' + SUPABASE_ANON_KEY; // hanya untuk kunci anon lama (JWT); kunci sb_publishable_ cukup lewat 'apikey'
-  const PAGE = 1000; // batas baris per permintaan di Supabase
-  const likeEscape = s => String(s).replace(/[\\%_]/g, c => '\\' + c); // escape karakter khusus LIKE
   window.storage = {
     async get(key){
       try{
-        const res = await fetch(`${REST}?select=key,value&key=eq.${encodeURIComponent(key)}&limit=1`, { headers: H, cache: 'no-store' });
-        if(!res.ok) throw new Error('HTTP ' + res.status);
-        const rows = await res.json();
-        if(!rows || !rows.length) return null;
-        return { key: rows[0].key, value: rows[0].value, shared: true };
-      } catch(e){ console.error('supabase get error', e); return null; }
+        const res = await fetch(`${REMOTE_STORAGE_URL}?action=get&key=${encodeURIComponent(key)}`);
+        const data = await res.json();
+        if(!data || data.value === null || data.value === undefined) return null;
+        return { key: data.key, value: data.value, shared: true };
+      } catch(e){ console.error('remote storage get error', e); return null; }
     },
     async set(key, value){
       try{
-        const res = await fetch(`${REST}?on_conflict=key`, {
+        await fetch(REMOTE_STORAGE_URL, {
           method: 'POST',
-          headers: { ...H, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-          body: JSON.stringify({ key, value: String(value), updated_at: new Date().toISOString() })
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'set', key, value })
         });
-        if(!res.ok) throw new Error('HTTP ' + res.status + ' ' + (await res.text().catch(() => '')));
         return { key, value, shared: true };
-      } catch(e){ console.error('supabase set error', e); return null; }
+      } catch(e){ console.error('remote storage set error', e); return null; }
     },
     async delete(key){
       try{
-        const res = await fetch(`${REST}?key=eq.${encodeURIComponent(key)}`, { method: 'DELETE', headers: { ...H, 'Prefer': 'return=minimal' } });
-        if(!res.ok) throw new Error('HTTP ' + res.status);
+        await fetch(REMOTE_STORAGE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ action: 'delete', key })
+        });
         return { key, deleted: true, shared: true };
-      } catch(e){ console.error('supabase delete error', e); return null; }
+      } catch(e){ console.error('remote storage delete error', e); return null; }
     },
     async list(prefix){
       try{
-        const keys = [];
-        const filter = prefix ? `&key=like.${encodeURIComponent(likeEscape(prefix) + '*')}` : '';
-        for(let offset = 0; ; offset += PAGE){
-          const res = await fetch(`${REST}?select=key&order=key.asc&limit=${PAGE}&offset=${offset}${filter}`, { headers: H, cache: 'no-store' });
-          if(!res.ok) throw new Error('HTTP ' + res.status);
-          const rows = await res.json();
-          rows.forEach(r => keys.push(r.key));
-          if(rows.length < PAGE) break;
-        }
-        return { keys, prefix, shared: true };
-      } catch(e){ console.error('supabase list error', e); return null; }
+        const res = await fetch(`${REMOTE_STORAGE_URL}?action=list&prefix=${encodeURIComponent(prefix||'')}`);
+        const data = await res.json();
+        return { keys: (data && data.keys) || [], prefix, shared: true };
+      } catch(e){ console.error('remote storage list error', e); return null; }
     }
   };
 })();
@@ -712,46 +710,37 @@ const EXAM_GROUPS = [
   { id:'sumatif',  label:'Ulangan Sumatif' },
   { id:'remidi',   label:'Remidi' },
 ];
+/* IKTP: tiap Ulangan Formatif TP (dan Remidinya) punya IKTP 1 s.d. 5, masing-masing dengan bank soal, token, dan rekap sendiri.
+   IKTP 1 memakai id lama (formatif, formatif2, ...) sehingga soal & nilai yang sudah tersimpan tetap terbaca. */
+const IKTP_COUNT = 5;
+function iktpId(base, k){ return k === 1 ? base : base + '_k' + k; }
+function iktpTypes(group, prefix, word, titleWord, shortPre, extra){
+  const out = [];
+  for(let n = 1; n <= 10; n++){
+    const base = prefix + (n === 1 ? '' : n);
+    for(let k = 1; k <= IKTP_COUNT; k++){
+      out.push(Object.assign({ id: iktpId(base, k), group, tpKey: base, tp: n, iktp: k,
+        label: word + ' TP ' + n + ' \u2014 IKTP ' + k, title: titleWord + ' TP ' + n + ' \u2014 IKTP ' + k,
+        short: shortPre + 'TP' + n + ' IKTP' + k }, extra || {}));
+    }
+  }
+  return out;
+}
+function tpLabelOf(t){ return String(t.label).replace(/ \u2014 IKTP \d+$/, ''); }
 const EXAM_TYPES = [
-  { id:'formatif',  group:'formatif', label:'Ulangan Formatif 1', title:'Penilaian Formatif 1' },
-  { id:'formatif2', group:'formatif', label:'Ulangan Formatif 2', title:'Penilaian Formatif 2' },
-  { id:'formatif3', group:'formatif', label:'Ulangan Formatif 3', title:'Penilaian Formatif 3' },
-  { id:'formatif4', group:'formatif', label:'Ulangan Formatif 4', title:'Penilaian Formatif 4' },
-  { id:'formatif5', group:'formatif', label:'Ulangan Formatif 5', title:'Penilaian Formatif 5' },
-  { id:'formatif6', group:'formatif', label:'Ulangan Formatif 6', title:'Penilaian Formatif 6' },
-  { id:'formatif7', group:'formatif', label:'Ulangan Formatif 7', title:'Penilaian Formatif 7' },
-  { id:'formatif8', group:'formatif', label:'Ulangan Formatif 8', title:'Penilaian Formatif 8' },
-  { id:'formatif9', group:'formatif', label:'Ulangan Formatif 9', title:'Penilaian Formatif 9' },
-  { id:'formatif10', group:'formatif', label:'Ulangan Formatif 10', title:'Penilaian Formatif 10' },
-  { id:'latihan',   group:'latihan',  label:'Latihan Soal 1', title:'Latihan Soal 1', practice:true },
-  { id:'latihan2',  group:'latihan',  label:'Latihan Soal 2', title:'Latihan Soal 2', practice:true },
-  { id:'latihan3',  group:'latihan',  label:'Latihan Soal 3', title:'Latihan Soal 3', practice:true },
-  { id:'latihan4',  group:'latihan',  label:'Latihan Soal 4', title:'Latihan Soal 4', practice:true },
-  { id:'latihan5',  group:'latihan',  label:'Latihan Soal 5', title:'Latihan Soal 5', practice:true },
-  { id:'latihan6', group:'latihan',  label:'Latihan Soal 6', title:'Latihan Soal 6', practice:true },
-  { id:'latihan7', group:'latihan',  label:'Latihan Soal 7', title:'Latihan Soal 7', practice:true },
-  { id:'latihan8', group:'latihan',  label:'Latihan Soal 8', title:'Latihan Soal 8', practice:true },
-  { id:'latihan9', group:'latihan',  label:'Latihan Soal 9', title:'Latihan Soal 9', practice:true },
-  { id:'latihan10', group:'latihan',  label:'Latihan Soal 10', title:'Latihan Soal 10', practice:true },
+  ...iktpTypes('formatif', 'formatif', 'Ulangan Formatif', 'Penilaian Formatif', ''),
+  ...iktpTypes('latihan', 'latihan', 'Latihan Soal', 'Latihan Soal', 'Lat ', { practice:true }),
   { id:'uts',       group:'uts',      label:'UTS 1', title:'Penilaian Tengah Semester 1' },
   { id:'uts2',      group:'uts',      label:'UTS 2', title:'Penilaian Tengah Semester 2' },
   { id:'sumatif',        group:'sumatif', label:'Ulangan Sumatif Ganjil', title:'Penilaian Sumatif Ganjil' },
   { id:'sumatif_genap',  group:'sumatif', label:'Ulangan Sumatif Genap',  title:'Penilaian Sumatif Genap' },
-  { id:'remidi',   group:'remidi', label:'Remidi 1', title:'Remidi 1' },
-  { id:'remidi2',  group:'remidi', label:'Remidi 2', title:'Remidi 2' },
-  { id:'remidi3',  group:'remidi', label:'Remidi 3', title:'Remidi 3' },
-  { id:'remidi4',  group:'remidi', label:'Remidi 4', title:'Remidi 4' },
-  { id:'remidi5',  group:'remidi', label:'Remidi 5', title:'Remidi 5' },
-  { id:'remidi6', group:'remidi', label:'Remidi 6', title:'Remidi 6' },
-  { id:'remidi7', group:'remidi', label:'Remidi 7', title:'Remidi 7' },
-  { id:'remidi8', group:'remidi', label:'Remidi 8', title:'Remidi 8' },
-  { id:'remidi9', group:'remidi', label:'Remidi 9', title:'Remidi 9' },
-  { id:'remidi10', group:'remidi', label:'Remidi 10', title:'Remidi 10' },
+  ...iktpTypes('remidi', 'remidi', 'Remidi', 'Remidi', 'Rem '),
   { id:'remidi_uts',  group:'remidi', label:'Remidi UTS 1', title:'Remidi UTS 1' },
   { id:'remidi_uts2', group:'remidi', label:'Remidi UTS 2', title:'Remidi UTS 2' },
   { id:'remidi_sumatif',       group:'remidi', label:'Remidi Sumatif Ganjil', title:'Remidi Sumatif Ganjil' },
   { id:'remidi_sumatif_genap', group:'remidi', label:'Remidi Sumatif Genap',  title:'Remidi Sumatif Genap' },
 ];
+EXAM_TYPES.forEach(t => { if(!t.tpKey) t.tpKey = t.id; });
 function examInfo(id){ return EXAM_TYPES.find(t => t.id === (id || state.examType)) || EXAM_TYPES[0]; }
 function isPractice(){ return !!examInfo().practice; }
 function exKey(base, type){ type = type || state.examType; return (!type || type === 'formatif') ? base : `${base}:${type}`; }
@@ -781,8 +770,12 @@ async function switchExamType(type){
   render();
 }
 function renderExamSelector(){
+  const cur = examInfo();
+  const firstOnly = t => !t.iktp || t.iktp === 1;
+  const iktpSel = cur.iktp ? `<label style="font-weight:700;">IKTP:</label>
+    <select id="sel-exam-iktp">${Array.from({length: IKTP_COUNT}, (_, i) => i + 1).map(k => `<option value="${iktpId(cur.tpKey, k)}" ${k === cur.iktp ? 'selected' : ''}>IKTP ${k}</option>`).join('')}</select>` : '';
   return `<div class="kls-bar" style="margin:0 0 14px;"><label style="font-weight:700;">Jenis ujian yang dikelola:</label>
-    <select id="sel-exam-type">${EXAM_GROUPS.map(g => `<optgroup label="${escapeHtml(g.label)}">${EXAM_TYPES.filter(t => t.group === g.id).map(t => `<option value="${t.id}" ${t.id===state.examType?'selected':''}>${escapeHtml(t.label)}</option>`).join('')}</optgroup>`).join('')}</select></div>`;
+    <select id="sel-exam-type">${EXAM_GROUPS.map(g => `<optgroup label="${escapeHtml(g.label)}">${EXAM_TYPES.filter(t => t.group === g.id && firstOnly(t)).map(t => `<option value="${t.id}" ${t.tpKey === cur.tpKey ? 'selected' : ''}>${escapeHtml(tpLabelOf(t))}</option>`).join('')}</optgroup>`).join('')}</select>${iktpSel}</div>`;
 }
 function renderPracticeNote(){
   return `<div class="teacher-panel"><h3>&#9999;&#65039; Latihan Soal</h3>
@@ -2020,7 +2013,9 @@ function attachGuruDashHandlers(){
   });
   document.getElementById('btn-back-role').onclick = () => { state.view = 'role'; render(); };
   if(state.guruTab === 'bank') attachBankTabHandlers();
-  const selEx = document.getElementById('sel-exam-type'); if(selEx) selEx.onchange = e => switchExamType(e.target.value);
+  const selEx = document.getElementById('sel-exam-type');
+  if(selEx) selEx.onchange = e => { const v = e.target.value, ni = examInfo(v), ci = examInfo(); switchExamType(ni.iktp ? iktpId(ni.tpKey, ci.iktp || 1) : v); };
+  const selIk = document.getElementById('sel-exam-iktp'); if(selIk) selIk.onchange = e => switchExamType(e.target.value);
   if(state.guruTab === 'sesi' && !isPractice()) attachSesiTabHandlers();
   if(state.guruTab === 'rekap' && !isPractice()) attachRekapTabHandlers();
   if(state.guruTab === 'menu') attachMenuTabHandlers();
@@ -3527,18 +3522,34 @@ async function examAvailable(type){
 }
 function renderExamPickView(){
   const g = state.examPick || {group:'formatif', avail:{}};
+  g.sel = g.sel || {};
   const grp = EXAM_GROUPS.find(x => x.id === g.group) || EXAM_GROUPS[0];
   const mm = MENU_SISWA.find(x => x.type === grp.id) || {icon:'', color:'#1F7A6C'};
   const types = EXAM_TYPES.filter(t => t.group === grp.id);
+  const keys = [...new Set(types.map(t => t.tpKey))];
+  const hasIk = types.some(t => t.iktp);
+  const stTxt = a => a === undefined ? 'Memeriksa soal...' : (a ? 'Soal tersedia' : 'Belum tersedia');
+  const cards = keys.map(key => {
+    const list = types.filter(t => t.tpKey === key);
+    if(list[0].iktp){
+      const chosen = g.sel[key] || (list.find(t => g.avail[t.id]) || list[0]).id;
+      const t = list.find(x => x.id === chosen) || list[0], a = g.avail[t.id];
+      return `<div class="mi-card"><div style="flex:1;min-width:200px;"><div class="mi-t">${escapeHtml(tpLabelOf(t))}</div>
+        <div class="mi-k" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
+          <select data-iktp-sel="${key}" style="font-family:inherit;font-size:13.5px;padding:4px 8px;border:1px solid var(--line);border-radius:4px;">
+            ${list.map(x => `<option value="${x.id}" ${x.id === t.id ? 'selected' : ''}>IKTP ${x.iktp}${g.avail[x.id] === undefined ? '' : (g.avail[x.id] ? ' \u2713' : ' (belum tersedia)')}</option>`).join('')}
+          </select><span class="mi-st">${stTxt(a)}</span></div></div>
+        <button class="btn primary" data-pick="${t.id}" ${a ? '' : 'disabled'}>Buka &rarr;</button></div>`;
+    }
+    const t = list[0], a = g.avail[t.id];
+    return `<div class="mi-card"><div style="flex:1;min-width:200px;"><div class="mi-t">${escapeHtml(t.label)}</div><div class="mi-k">${stTxt(a)}</div></div>
+      <button class="btn primary" data-pick="${t.id}" ${a ? '' : 'disabled'}>Buka &rarr;</button></div>`;
+  }).join('');
   return renderSchoolHeader() + `
   <div class="start-card">
     <h2>${mm.icon} ${escapeHtml(grp.label)}</h2>
-    <p class="start-desc">Pilih ${grp.id === 'sumatif' ? 'semester' : 'nomor'} yang ingin dikerjakan.</p>
-    <div class="mi-list">
-      ${types.map(t => { const a = g.avail[t.id];
-        return `<div class="mi-card"><div style="flex:1;min-width:200px;"><div class="mi-t">${escapeHtml(t.label)}</div><div class="mi-k">${a === undefined ? 'Memeriksa soal...' : (a ? 'Soal tersedia' : 'Belum tersedia')}</div></div>
-        <button class="btn primary" data-pick="${t.id}" ${a ? '' : 'disabled'}>Buka &rarr;</button></div>`; }).join('')}
-    </div>
+    <p class="start-desc">${grp.id === 'sumatif' ? 'Pilih semester yang ingin dikerjakan.' : (hasIk ? 'Pilih TP, lalu pilih <strong>IKTP 1 s.d. 5</strong> pada dropdown sebelum menekan Buka.' : 'Pilih nomor yang ingin dikerjakan.')}</p>
+    <div class="mi-list">${cards}</div>
     <div class="menu-note" id="menu-note"></div>
   </div>
   <div class="navrow"><button class="btn ghost" id="btn-back-menu">&larr; Kembali ke Menu</button><span></span></div>`;
@@ -3548,12 +3559,18 @@ function attachExamPickHandlers(){
   document.querySelectorAll('[data-pick]').forEach(el => el.onclick = () => {
     const t = examInfo(el.dataset.pick); openExam({ type: t.id, label: t.label });
   });
+  document.querySelectorAll('[data-iktp-sel]').forEach(el => el.onchange = () => {
+    const g = state.examPick; g.sel = g.sel || {}; g.sel[el.dataset.iktpSel] = el.value;
+    const card = el.closest('.mi-card'), btn = card.querySelector('[data-pick]'), a = g.avail[el.value];
+    btn.dataset.pick = el.value; btn.disabled = !a;
+    card.querySelector('.mi-st').textContent = a === undefined ? 'Memeriksa soal...' : (a ? 'Soal tersedia' : 'Belum tersedia');
+  });
 }
 async function showExamPick(group){
-  state.examPick = { group, avail: {} };
+  state.examPick = { group, avail: {}, sel: {} };
   state.view = 'siswa_exam_pick'; render();
   const types = EXAM_TYPES.filter(t => t.group === group);
-  await Promise.all(types.map(async t => { state.examPick.avail[t.id] = await examAvailable(t.id); }));
+  await poolMap(types, 10, async t => { state.examPick.avail[t.id] = await examAvailable(t.id); });
   if(state.view === 'siswa_exam_pick' && state.examPick && state.examPick.group === group) render();
 }
 async function openExam(m){
@@ -4536,9 +4553,8 @@ function downloadClassCSV(kelas){
      - Latihan & Pengayaan                 : 'nilaiman:<item>:<kelas>' (input manual guru)
    Pengaturan (KKM, bobot, aturan remidi) disimpan di state.settings.nilaiCfg.
    ====================================================================== */
-const REMIDI_OF = { formatif:'remidi', formatif2:'remidi2', formatif3:'remidi3', formatif4:'remidi4', formatif5:'remidi5',
-  formatif6:'remidi6', formatif7:'remidi7', formatif8:'remidi8', formatif9:'remidi9', formatif10:'remidi10',
-  uts:'remidi_uts', uts2:'remidi_uts2', sumatif:'remidi_sumatif', sumatif_genap:'remidi_sumatif_genap' };
+const REMIDI_OF = { uts:'remidi_uts', uts2:'remidi_uts2', sumatif:'remidi_sumatif', sumatif_genap:'remidi_sumatif_genap' };
+for(let n = 1; n <= 10; n++) for(let k = 1; k <= IKTP_COUNT; k++) REMIDI_OF[iktpId('formatif' + (n === 1 ? '' : n), k)] = iktpId('remidi' + (n === 1 ? '' : n), k);
 const REMIDI_BASE = {}; Object.keys(REMIDI_OF).forEach(k => { REMIDI_BASE[REMIDI_OF[k]] = k; });
 function kkmUjianVal(){ const m = (state.settings && state.settings.kkmUjian) || {}, v = m[state.examType]; return (v === undefined || v === null) ? '' : v; }
 function nilaiKkmOf(id, cfg){
@@ -4565,7 +4581,7 @@ function nilaiState(){
   return state.nilai;
 }
 function nilaiCats(){
-  const ex = g => EXAM_TYPES.filter(t => t.group === g).map(t => ({ id:t.id, label:t.label }));
+  const ex = g => EXAM_TYPES.filter(t => t.group === g).map(t => ({ id:t.id, label:t.label, short:t.short }));
   const menu = id => (getMenuItems()[id] || []).filter(it => (it.judul || '').trim()).map(it => ({ id: id + ':' + itemKeyOf(it), label: it.judul }));
   return [
     { id:'lkm',       label:'LKM',              items: menu('lkm') },
@@ -4584,7 +4600,7 @@ function nilaiSemOf(id){
   if(ok(m[id])) return m[id];
   const base = REMIDI_BASE[id] || id;
   if(base !== id && ok(m[base])) return m[base];
-  if(/^(formatif|latihan)(6|7|8|9|10)$/.test(base)) return 'genap';
+  if(/^(formatif|latihan)(6|7|8|9|10)(_k\d)?$/.test(base)) return 'genap';
   return ({ uts2:'genap', sumatif_genap:'genap' })[base] || 'ganjil';
 }
 function nilaiSemLabel(sem){ return sem === 'genap' ? 'Genap' : 'Ganjil'; }
@@ -4835,7 +4851,7 @@ function renderNilaiBoard(){
   head += N.detail ? cats.map(c => `<th colspan="${c.shown.length + 1}" style="text-align:center;">${escapeHtml(c.label)}</th>`).join('')
                    : cats.map(c => `<th class="num">${escapeHtml(c.label)}</th>`).join('');
   head += `<th class="num" rowspan="${rs}" title="Rata-rata berbobot sesuai pengaturan di bawah">Nilai Akhir</th><th rowspan="${rs}" title="Tuntas bila semua Formatif, UTS, dan Sumatif (setelah remidi) mencapai KKM masing-masing">Ketuntasan</th></tr>`;
-  if(N.detail) head += '<tr>' + cols.map(col => col.k === 'item' ? `<th class="num" title="${escAttr(col.it.label)}">${escapeHtml(nilaiShort(col.it.label))}</th>` : '<th class="num">Rata-rata</th>').join('') + '</tr>';
+  if(N.detail) head += '<tr>' + cols.map(col => col.k === 'item' ? `<th class="num" title="${escAttr(col.it.label)}">${escapeHtml(col.it.short || nilaiShort(col.it.label))}</th>` : '<th class="num">Rata-rata</th>').join('') + '</tr>';
   const groups = {};
   list.forEach(s => (groups[s.kelas] = groups[s.kelas] || []).push(s));
   let body = '';
